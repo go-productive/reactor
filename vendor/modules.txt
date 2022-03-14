@@ -1,0 +1,4 @@
+# golang.org/x/sys v0.0.0-20220310020820-b874c991c1a5
+## explicit
+golang.org/x/sys/internal/unsafeheader
+golang.org/x/sys/unix
