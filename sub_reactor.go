@@ -21,7 +21,7 @@ type (
 		taskChan chan func()
 
 		connSet  map[*Conn]struct{}
-		connSize uint32
+		connSize int32
 
 		events              [1024]epollevent
 		pendingReadConnSet  map[*Conn]struct{}
@@ -204,7 +204,7 @@ func (s *_SubReactor) registerConn(conn *Conn) {
 	}
 	s.mainReactor.options.onConnFunc(conn)
 	s.connSet[conn] = struct{}{}
-	atomic.AddUint32(&s.connSize, 1)
+	atomic.AddInt32(&s.connSize, 1)
 }
 
 func (s *_SubReactor) write(conn *Conn, bs []byte) {
@@ -232,7 +232,7 @@ func (s *_SubReactor) closeConn(conn *Conn) error {
 		s.mainReactor.logSessionError("closeConn", err, conn)
 	}
 	delete(s.connSet, conn)
-	atomic.AddUint32(&s.connSize, -1)
+	atomic.AddInt32(&s.connSize, -1)
 	delete(s.pendingReadConnSet, conn)
 	delete(s.pendingWriteConnSet, conn)
 	s.mainReactor.options.onDisConnFunc(conn)

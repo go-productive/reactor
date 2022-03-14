@@ -19,7 +19,6 @@ var (
 type (
 	MainReactor struct {
 		options *_Options
-		logger  Logger
 
 		listener   *net.TCPListener
 		listenerFD int
@@ -31,11 +30,10 @@ type (
 	}
 )
 
-func New(addr string, logger Logger, opts ...Option) *MainReactor {
+func New(addr string, opts ...Option) *MainReactor {
 	options := newOptions(opts...)
 	m := &MainReactor{
 		options:      options,
-		logger:       logger,
 		subReactors:  make([]*_SubReactor, 0, options.subReactorSize),
 		shutdownChan: make(chan struct{}),
 	}
@@ -67,7 +65,7 @@ func (m *MainReactor) ListenAndServe() error {
 			opError := &net.OpError{Op: "accept", Net: "tcp", Source: nil, Addr: m.listener.Addr(), Err: err}
 			if opError.Temporary() {
 				time.Sleep(time.Second)
-				m.logger.Errorw("ListenAndServe", "err", opError)
+				m.options.logErrorFunc("ListenAndServe", "err", opError)
 				continue
 			}
 			return opError
@@ -99,7 +97,7 @@ func (m *MainReactor) logError(msg string, err error) {
 	if m.notNeedLog(err) {
 		return
 	}
-	m.logger.Errorw(msg, "err", err)
+	m.options.logErrorFunc(msg, "err", err)
 }
 
 func (m *MainReactor) notNeedLog(err error) bool {
@@ -124,7 +122,7 @@ func (m *MainReactor) logSessionError(msg string, err error, conn *Conn) {
 	if m.notNeedLog(err) {
 		return
 	}
-	m.logger.Errorw(msg, "err", err, "remote_addr", conn.RemoteAddr().String(), "session", conn.Session)
+	m.options.logErrorFunc(msg, "err", err, "remote_addr", conn.RemoteAddr().String(), "session", conn.Session)
 }
 
 func toAddr(sa syscall.Sockaddr) net.Addr {

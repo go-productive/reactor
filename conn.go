@@ -34,7 +34,7 @@ type (
 func (m *MainReactor) registerConn(fd int, remoteAddr net.Addr) error {
 	leastSubReactor := m.subReactors[0]
 	for i := 1; i < len(m.subReactors); i++ {
-		if atomic.LoadUint32(&m.subReactors[i].connSize) < atomic.LoadUint32(&leastSubReactor.connSize) {
+		if atomic.LoadInt32(&m.subReactors[i].connSize) < atomic.LoadInt32(&leastSubReactor.connSize) {
 			leastSubReactor = m.subReactors[i]
 		}
 	}

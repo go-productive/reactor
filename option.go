@@ -4,16 +4,15 @@ package reactor
 
 import (
 	"encoding/binary"
+	"log"
 	"math"
 	"runtime"
 )
 
 type (
-	Logger interface {
-		Errorw(msg string, keysAndValues ...interface{})
-	}
 	_Options struct {
 		subReactorSize int
+		logErrorFunc   func(msg string, keysAndValues ...interface{})
 		debugMode      bool
 
 		readBufSize   uint16
@@ -32,8 +31,11 @@ type (
 func newOptions(opts ...Option) *_Options {
 	o := &_Options{
 		subReactorSize: runtime.GOMAXPROCS(0),
-		readBufSize:    1 << 10, // 1K
-		headLen:        2,
+		logErrorFunc: func(msg string, keysAndValues ...interface{}) {
+			log.Println(append([]interface{}{"msg", msg}, keysAndValues...)...)
+		},
+		readBufSize: 1 << 10, // 1K
+		headLen:     2,
 		headLenFunc: func(bs []byte) int {
 			return int(binary.BigEndian.Uint16(bs))
 		},
@@ -55,6 +57,12 @@ func newOptions(opts ...Option) *_Options {
 func WithSubReactorSize(subReactorSize int) Option {
 	return func(o *_Options) {
 		o.subReactorSize = subReactorSize
+	}
+}
+
+func WithLogErrorFunc(logErrorFunc func(msg string, keysAndValues ...interface{})) Option {
+	return func(o *_Options) {
+		o.logErrorFunc = logErrorFunc
 	}
 }
 
@@ -96,7 +104,7 @@ func WithOnDisConn(onDisConnFunc func(conn *Conn)) Option {
 	}
 }
 
-func WithReadMsgFunc(onReadMsgFunc func(reqBytes []byte, conn *Conn)) Option {
+func WithOnReadMsgFunc(onReadMsgFunc func(reqBytes []byte, conn *Conn)) Option {
 	return func(o *_Options) {
 		o.onReadMsgFunc = onReadMsgFunc
 	}
