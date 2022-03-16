@@ -64,7 +64,7 @@ func (c *Conn) SyncWrite(bs []byte) {
 	c.subReactor.write(c, bs)
 }
 
-// CancelOnlyCallback go on splitting package on tcp level by Conn self when WithOnlyCallback, it can be less byte copy.
+// CancelOnlyCallback go on splitting msg on tcp level by Conn self when WithOnlyCallback, it can be less byte copy.
 //
 // Thread-unsafe, call it in callback onReadMsgFunc
 func (c *Conn) CancelOnlyCallback(sticky []byte) {
