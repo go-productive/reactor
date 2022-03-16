@@ -136,7 +136,7 @@ func (c *Conn) readMsg() (bool, [][]byte, error) {
 		start := c.msgIndex + options.headLen
 		bodyLength := options.headLenFunc(c.readBuf[c.msgIndex:start])
 		if bodyLength > options.maxBodyLength {
-			return false, nil, ErrTooBigPackage
+			return false, nil, ErrTooBigMsg
 		}
 		if bodyLength > len(c.readBuf)-options.headLen {
 			c.readBigBodyBuf = make([]byte, bodyLength)

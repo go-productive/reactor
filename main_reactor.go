@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	ErrTooBigPackage = errors.New("too big package")
+	ErrTooBigMsg = errors.New("too big msg")
 )
 
 type (
@@ -64,8 +64,8 @@ func (m *MainReactor) ListenAndServe() error {
 			}
 			opError := &net.OpError{Op: "accept", Net: "tcp", Source: nil, Addr: m.listener.Addr(), Err: err}
 			if opError.Temporary() {
-				time.Sleep(time.Second)
 				m.options.logErrorFunc("ListenAndServe", "err", opError)
+				time.Sleep(time.Second)
 				continue
 			}
 			return opError
@@ -111,7 +111,7 @@ func (m *MainReactor) notNeedLog(err error) bool {
 }
 
 func isNetError(err error) bool {
-	if err == io.EOF || err == ErrTooBigPackage {
+	if err == io.EOF || err == ErrTooBigMsg {
 		return true
 	}
 	_, ok := err.(net.Error)
