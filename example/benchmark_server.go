@@ -13,15 +13,11 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			go func() {
-				rsp := strconv.Itoa(req + 1)
-				bs := make([]byte, 2+len(rsp))
-				binary.BigEndian.PutUint16(bs[:2], uint16(len(rsp)))
-				copy(bs[2:], rsp)
-				if err := conn.AsyncWrite(bs); err != nil {
-					panic(err)
-				}
-			}()
+			rsp := strconv.Itoa(req + 1)
+			bs := make([]byte, 2+len(rsp))
+			binary.BigEndian.PutUint16(bs[:2], uint16(len(rsp)))
+			copy(bs[2:], rsp)
+			conn.SyncWrite(bs)
 		}),
 	)
 	panic(mainReactor.ListenAndServe())

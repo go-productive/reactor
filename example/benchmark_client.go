@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 100; i++ {
 		go func() {
 			conn, err := net.Dial("tcp", ":64000")
 			if err != nil {
