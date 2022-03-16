@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -76,9 +77,16 @@ func (s *_SubReactor) eventLoop() {
 	for msec := -1; ; {
 		n, err := s.epollWaitAndHandle(msec)
 		if err != nil {
-			s.mainReactor.logError("epollWaitAndHandle", err)
-			for conn := range s.connSet {
-				s.mainReactor.logSessionError("closeConn", s.closeConn(conn), conn)
+			s.consumeTaskChan()
+			for ; len(s.connSet) > 0; time.Sleep(time.Millisecond) {
+				for conn := range s.connSet {
+					if !conn.writeBuf.isEmpty() {
+						_, _ = s.writeBufToFD(conn)
+					}
+					if conn.writeBuf.isEmpty() {
+						s.closeConn(conn)
+					}
+				}
 			}
 			if s.mainReactor.IsShutdown() {
 				return
@@ -98,19 +106,25 @@ func (s *_SubReactor) eventLoop() {
 	}
 }
 
+func (s *_SubReactor) writeBufToFD(conn *Conn) (bool, error) {
+	writeFull, err := conn.writeBufToFD()
+	if err != nil {
+		s.mainReactor.logSessionError("writeBufToFD", err, conn)
+		s.closeConn(conn)
+	}
+	return writeFull, err
+}
+
 func (s *_SubReactor) handlePending() {
 	for conn := range s.pendingWriteConnSet {
-		if writeFull, err := conn.writeBufToFD(); err != nil {
-			s.mainReactor.logSessionError("writeBufToFD", err, conn)
-			s.mainReactor.logSessionError("closeConn", s.closeConn(conn), conn)
-		} else if writeFull {
+		if writeFull, err := s.writeBufToFD(conn); err == nil && writeFull {
 			delete(s.pendingWriteConnSet, conn)
 		}
 	}
 	for conn := range s.pendingReadConnSet {
 		if edgeReadAll, err := s.handleRead(conn); err != nil {
 			s.mainReactor.logSessionError("handleRead", err, conn)
-			s.mainReactor.logSessionError("closeConn", s.closeConn(conn), conn)
+			s.closeConn(conn)
 		} else if edgeReadAll {
 			delete(s.pendingReadConnSet, conn)
 		}
@@ -146,16 +160,13 @@ func (s *_SubReactor) epollWaitAndHandle(msec int) (int, error) {
 		if event.events&eventsRead != 0 {
 			if edgeReadAll, err := s.handleRead(conn); err != nil {
 				s.mainReactor.logSessionError("handleRead", err, conn)
-				s.mainReactor.logSessionError("closeConn", s.closeConn(conn), conn)
+				s.closeConn(conn)
 			} else if !edgeReadAll {
 				s.pendingReadConnSet[conn] = struct{}{}
 			}
 		}
 		if event.events&eventsWrite != 0 && !conn.writeBuf.isEmpty() {
-			if writeFull, err := conn.writeBufToFD(); err != nil {
-				s.mainReactor.logSessionError("writeBufToFD", err, conn)
-				s.mainReactor.logSessionError("closeConn", s.closeConn(conn), conn)
-			} else if !writeFull {
+			if writeFull, err := s.writeBufToFD(conn); err == nil && !writeFull {
 				s.pendingWriteConnSet[conn] = struct{}{}
 			}
 		}
@@ -209,10 +220,7 @@ func (s *_SubReactor) registerConn(conn *Conn) {
 
 func (s *_SubReactor) write(conn *Conn, bs []byte) {
 	conn.writeBuf.write(bs)
-	if writeFull, err := conn.writeBufToFD(); err != nil {
-		s.mainReactor.logSessionError("writeBufToFD", err, conn)
-		s.mainReactor.logSessionError("closeConn", s.closeConn(conn), conn)
-	} else if !writeFull {
+	if writeFull, err := s.writeBufToFD(conn); err == nil && !writeFull {
 		s.pendingWriteConnSet[conn] = struct{}{}
 	}
 }
@@ -222,9 +230,9 @@ func (s *_SubReactor) shutdown() {
 	s.mainReactor.logError("Close", syscall.Close(s.wakeConn.fd))
 }
 
-func (s *_SubReactor) closeConn(conn *Conn) error {
+func (s *_SubReactor) closeConn(conn *Conn) {
 	if conn.closed {
-		return nil
+		return
 	}
 	s.mainReactor.logSessionError("closeConn", conn.newOpError("close", syscall.Close(conn.fd)), conn)
 	err := s.epollCtlConn(syscall.EPOLL_CTL_DEL, conn, 0)
@@ -237,5 +245,5 @@ func (s *_SubReactor) closeConn(conn *Conn) error {
 	delete(s.pendingWriteConnSet, conn)
 	s.mainReactor.options.onDisConnFunc(conn)
 	conn.closed = true
-	return nil
+	return
 }

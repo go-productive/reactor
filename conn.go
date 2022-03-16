@@ -79,7 +79,7 @@ func (c *Conn) CancelOnlyCallback(sticky []byte) {
 // Any blocked Read or Write operations will be unblocked and return errors.
 func (c *Conn) Close() error {
 	return c.subReactor.transferToTaskChan(func() {
-		c.mainReactor.logSessionError("closeConn", c.subReactor.closeConn(c), c)
+		c.subReactor.closeConn(c)
 	})
 }
 

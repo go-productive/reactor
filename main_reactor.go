@@ -60,7 +60,7 @@ func (m *MainReactor) ListenAndServe() error {
 		fd, remoteAddr, err := syscall.Accept4(m.listenerFD, syscall.SOCK_NONBLOCK)
 		if err != nil {
 			if m.IsShutdown() {
-				return nil
+				return err
 			}
 			opError := &net.OpError{Op: "accept", Net: "tcp", Source: nil, Addr: m.listener.Addr(), Err: err}
 			if opError.Temporary() {
@@ -76,8 +76,16 @@ func (m *MainReactor) ListenAndServe() error {
 }
 
 func (m *MainReactor) Shutdown() {
+	m.ShutdownMainReactor()
+	m.ShutdownSubReactor()
+}
+
+func (m *MainReactor) ShutdownMainReactor() {
 	close(m.shutdownChan)
 	_ = m.listener.Close()
+}
+
+func (m *MainReactor) ShutdownSubReactor() {
 	for _, subReactor := range m.subReactors {
 		subReactor.shutdown()
 	}

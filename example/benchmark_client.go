@@ -11,10 +11,33 @@ import (
 )
 
 func main() {
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 8; i++ {
 		go func() {
-			conn := createConn()
-			for headBuf := make([]byte, 2); ; {
+			conn, err := net.Dial("tcp", ":64000")
+			if err != nil {
+				panic(err)
+			}
+			ch := make(chan int, 1_0000)
+			go func() {
+				for headBuf := make([]byte, 2); ; time.Sleep(time.Millisecond) {
+					if _, err := io.ReadFull(conn, headBuf); err != nil {
+						panic(err)
+					}
+					rspBytes := make([]byte, binary.BigEndian.Uint16(headBuf))
+					if _, err := io.ReadFull(conn, rspBytes); err != nil {
+						panic(err)
+					}
+					rsp, err := strconv.Atoi(string(rspBytes))
+					if err != nil {
+						panic(err)
+					}
+					value := <-ch
+					if rsp != value+1 {
+						panic(fmt.Sprintf("%v,%v", rsp, value))
+					}
+				}
+			}()
+			for {
 				value := rand.Int()
 				req := strconv.Itoa(value)
 				reqBytes := make([]byte, 2+len(req))
@@ -23,37 +46,9 @@ func main() {
 				if _, err := conn.Write(reqBytes); err != nil {
 					panic(err)
 				}
-
-				if _, err := io.ReadFull(conn, headBuf); err != nil {
-					panic(err)
-				}
-				rspBytes := make([]byte, binary.BigEndian.Uint16(headBuf))
-				if _, err := io.ReadFull(conn, rspBytes); err != nil {
-					panic(err)
-				}
-				rsp, err := strconv.Atoi(string(rspBytes))
-				if err != nil {
-					panic(err)
-				}
-				if rsp != value+1 {
-					panic(fmt.Sprintf("%v,%v", rsp, value))
-				}
-
-				if value%100 == 0 {
-					conn.Close()
-					conn = createConn()
-				}
-				time.Sleep(time.Duration(rand.Intn(9)+1) * time.Millisecond)
+				ch <- value
 			}
 		}()
 	}
 	select {}
-}
-
-func createConn() net.Conn {
-	conn, err := net.Dial("tcp", ":64000")
-	if err != nil {
-		panic(err)
-	}
-	return conn
 }
