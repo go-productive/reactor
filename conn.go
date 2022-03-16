@@ -106,18 +106,7 @@ func (c *Conn) readMsg() (bool, [][]byte, error) {
 		return edgeReadAll, [][]byte{c.readBuf[:readN]}, err
 	}
 	if c.readBigBodyBuf != nil {
-		edgeReadAll, readN, err := c.readToBuf(c.readBigBodyBuf[c.readIndex:])
-		if err != nil {
-			return edgeReadAll, nil, err
-		}
-		c.readIndex += readN
-		if c.readIndex < len(c.readBigBodyBuf) {
-			return edgeReadAll, nil, nil
-		}
-		messages := [][]byte{c.readBigBodyBuf}
-		c.readBigBodyBuf = nil
-		c.readIndex = 0
-		return edgeReadAll, messages, nil
+		return c.readBigBodyMsg()
 	}
 
 	if c.msgIndex > 0 {
@@ -132,8 +121,7 @@ func (c *Conn) readMsg() (bool, [][]byte, error) {
 
 	var messages [][]byte
 	options := c.mainReactor.options
-	for c.readIndex-c.msgIndex >= options.headLen {
-		start := c.msgIndex + options.headLen
+	for start := c.msgIndex + options.headLen; c.readIndex >= start; start = c.msgIndex + options.headLen {
 		bodyLength := options.headLenFunc(c.readBuf[c.msgIndex:start])
 		if bodyLength > options.maxBodyLength {
 			return false, nil, ErrTooBigMsg
@@ -142,16 +130,31 @@ func (c *Conn) readMsg() (bool, [][]byte, error) {
 			c.readBigBodyBuf = make([]byte, bodyLength)
 			c.readIndex = copy(c.readBigBodyBuf, c.readBuf[start:c.readIndex])
 			c.msgIndex = 0
-			return c.readMsg()
+			return c.readBigBodyMsg()
 		}
 
-		if c.readIndex-start < bodyLength {
+		end := start + bodyLength
+		if c.readIndex < end {
 			return edgeReadAll, messages, nil
 		}
-		end := start + bodyLength
 		messages = append(messages, c.readBuf[start:end])
 		c.msgIndex = end
 	}
+	return edgeReadAll, messages, nil
+}
+
+func (c *Conn) readBigBodyMsg() (bool, [][]byte, error) {
+	edgeReadAll, readN, err := c.readToBuf(c.readBigBodyBuf[c.readIndex:])
+	if err != nil {
+		return edgeReadAll, nil, err
+	}
+	c.readIndex += readN
+	if c.readIndex < len(c.readBigBodyBuf) {
+		return edgeReadAll, nil, nil
+	}
+	messages := [][]byte{c.readBigBodyBuf}
+	c.readBigBodyBuf = nil
+	c.readIndex = 0
 	return edgeReadAll, messages, nil
 }
 
