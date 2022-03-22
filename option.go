@@ -11,9 +11,9 @@ import (
 
 type (
 	_Options struct {
-		subReactorSize int
-		logErrorFunc   func(msg string, keysAndValues ...interface{})
-		debugMode      bool
+		eventLoopSize int
+		logErrorFunc  func(msg string, keysAndValues ...interface{})
+		debugMode     bool
 
 		readBufSize   uint16
 		onlyCallback  bool
@@ -30,7 +30,7 @@ type (
 
 func newOptions(opts ...Option) *_Options {
 	o := &_Options{
-		subReactorSize: runtime.GOMAXPROCS(0),
+		eventLoopSize: runtime.GOMAXPROCS(0),
 		logErrorFunc: func(msg string, keysAndValues ...interface{}) {
 			log.Println(append([]interface{}{"msg", msg}, keysAndValues...)...)
 		},
@@ -54,9 +54,9 @@ func newOptions(opts ...Option) *_Options {
 	return o
 }
 
-func WithSubReactorSize(subReactorSize int) Option {
+func WithEventLoopSize(eventLoopSize int) Option {
 	return func(o *_Options) {
-		o.subReactorSize = subReactorSize
+		o.eventLoopSize = eventLoopSize
 	}
 }
 

@@ -14,8 +14,8 @@ import (
 type (
 	Conn struct {
 		fd           int
-		mainReactor  *MainReactor
-		subReactor   *_SubReactor
+		reactor      *Reactor
+		eventLoop    *_EventLoop
 		remoteAddr   net.Addr
 		closed       bool
 		onlyCallback bool
@@ -31,37 +31,37 @@ type (
 	}
 )
 
-func (m *MainReactor) registerConn(fd int, remoteAddr net.Addr) error {
-	leastSubReactor := m.subReactors[0]
-	for i := 1; i < len(m.subReactors); i++ {
-		if atomic.LoadInt32(&m.subReactors[i].connSize) < atomic.LoadInt32(&leastSubReactor.connSize) {
-			leastSubReactor = m.subReactors[i]
+func (r *Reactor) registerConn(fd int, remoteAddr net.Addr) error {
+	leastEventLoop := r.eventLoops[0]
+	for i := 1; i < len(r.eventLoops); i++ {
+		if atomic.LoadInt32(&r.eventLoops[i].connSize) < atomic.LoadInt32(&leastEventLoop.connSize) {
+			leastEventLoop = r.eventLoops[i]
 		}
 	}
 	c := &Conn{
 		fd:           fd,
-		mainReactor:  m,
-		onlyCallback: m.options.onlyCallback,
-		subReactor:   leastSubReactor,
+		reactor:      r,
+		onlyCallback: r.options.onlyCallback,
+		eventLoop:    leastEventLoop,
 		remoteAddr:   remoteAddr,
-		readBuf:      make([]byte, m.options.readBufSize),
+		readBuf:      make([]byte, r.options.readBufSize),
 	}
-	return c.subReactor.transferToTaskChan(func() {
-		c.subReactor.registerConn(c)
+	return c.eventLoop.transferToTaskChan(func() {
+		c.eventLoop.registerConn(c)
 	})
 }
 
 // AsyncWrite write bytes to conn in other goroutine.
 func (c *Conn) AsyncWrite(bs []byte) error {
-	return c.subReactor.transferToTaskChan(func() {
-		c.subReactor.write(c, bs)
+	return c.eventLoop.transferToTaskChan(func() {
+		c.eventLoop.write(c, bs)
 	})
 }
 
 // SyncWrite write bytes to conn.
 // Thread-unsafe, call it in callback onReadMsgFunc
 func (c *Conn) SyncWrite(bs []byte) {
-	c.subReactor.write(c, bs)
+	c.eventLoop.write(c, bs)
 }
 
 // CancelOnlyCallback go on splitting msg on tcp level by Conn self when WithOnlyCallback, it can be less byte copy.
@@ -78,8 +78,8 @@ func (c *Conn) CancelOnlyCallback(sticky []byte) {
 // Close closes the connection.
 // Any blocked Read or Write operations will be unblocked and return errors.
 func (c *Conn) Close() error {
-	return c.subReactor.transferToTaskChan(func() {
-		c.subReactor.closeConn(c)
+	return c.eventLoop.transferToTaskChan(func() {
+		c.eventLoop.closeConn(c)
 	})
 }
 
@@ -92,7 +92,7 @@ func (c *Conn) newOpError(op string, err error) error {
 
 // LocalAddr returns the local network address.
 func (c *Conn) LocalAddr() net.Addr {
-	return c.mainReactor.listener.Addr()
+	return c.reactor.listener.Addr()
 }
 
 // RemoteAddr returns the remote network address.
@@ -120,7 +120,7 @@ func (c *Conn) readMsg() (bool, [][]byte, error) {
 	c.readIndex += readN
 
 	var messages [][]byte
-	options := c.mainReactor.options
+	options := c.reactor.options
 	for start := c.msgIndex + options.headLen; c.readIndex >= start; start = c.msgIndex + options.headLen {
 		bodyLength := options.headLenFunc(c.readBuf[c.msgIndex:start])
 		if bodyLength > options.maxBodyLength {

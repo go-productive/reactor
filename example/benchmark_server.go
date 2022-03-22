@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	mainReactor := reactor.New(":64000",
+	r := reactor.New(":64000",
 		reactor.WithOnReadMsgFunc(func(reqBytes []byte, conn *reactor.Conn) {
 			req, err := strconv.Atoi(string(reqBytes))
 			if err != nil {
@@ -20,5 +20,5 @@ func main() {
 			conn.SyncWrite(bs)
 		}),
 	)
-	panic(mainReactor.ListenAndServe())
+	panic(r.ListenAndServe())
 }
