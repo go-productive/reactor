@@ -35,16 +35,16 @@ type (
 
 func New(addr string, opts ...Option) *Reactor {
 	options := newOptions(opts...)
-	m := &Reactor{
+	r := &Reactor{
 		options:      options,
 		addr:         addr,
 		eventLoops:   make([]*_EventLoop, 0, options.eventLoopSize),
 		shutdownChan: make(chan struct{}),
 	}
-	for i := 0; i < cap(m.eventLoops); i++ {
-		m.eventLoops = append(m.eventLoops, m.newEventLoop())
+	for i := 0; i < cap(r.eventLoops); i++ {
+		r.eventLoops = append(r.eventLoops, r.newEventLoop())
 	}
-	return m
+	return r
 }
 
 func (r *Reactor) newListener(nonblocking bool) int {

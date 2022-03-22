@@ -47,7 +47,7 @@ func (r *Reactor) newEventLoop() *_EventLoop {
 	_panic(err)
 	wakeFD, err := unix.Eventfd(0, syscall.O_NONBLOCK)
 	_panic(err)
-	s := &_EventLoop{
+	e := &_EventLoop{
 		reactor:             r,
 		epollFD:             epollFD,
 		wakeConn:            &Conn{fd: wakeFD},
@@ -56,15 +56,14 @@ func (r *Reactor) newEventLoop() *_EventLoop {
 		pendingReadConnSet:  make(map[*Conn]struct{}),
 		pendingWriteConnSet: make(map[*Conn]struct{}),
 	}
-	_panic(s.epollCtlConn(syscall.EPOLL_CTL_ADD, s.wakeConn, syscall.EPOLLIN|unix.EPOLLET))
+	_panic(e.epollCtlConn(syscall.EPOLL_CTL_ADD, e.wakeConn, syscall.EPOLLIN|unix.EPOLLET))
 	if r.options.reusePort {
-		listenerFD := r.newListener(true)
-		s.listenerConn = &Conn{fd: listenerFD}
-		_panic(s.epollCtlConn(syscall.EPOLL_CTL_ADD, s.listenerConn, syscall.EPOLLIN))
+		e.listenerConn = &Conn{fd: r.newListener(true)}
+		_panic(e.epollCtlConn(syscall.EPOLL_CTL_ADD, e.listenerConn, syscall.EPOLLIN))
 	}
 	r.waitGroup.Add(1)
-	go s.eventLoop()
-	return s
+	go e.eventLoop()
+	return e
 }
 
 func (e *_EventLoop) epollCtlConn(op int, conn *Conn, events uint32) error {
