@@ -11,6 +11,7 @@ import (
 
 type (
 	_Options struct {
+		reusePort     bool
 		eventLoopSize int
 		logErrorFunc  func(msg string, keysAndValues ...interface{})
 		debugMode     bool
@@ -52,6 +53,12 @@ func newOptions(opts ...Option) *_Options {
 		opt(o)
 	}
 	return o
+}
+
+func WithReusePort(reusePort bool) Option {
+	return func(o *_Options) {
+		o.reusePort = reusePort
+	}
 }
 
 func WithEventLoopSize(eventLoopSize int) Option {

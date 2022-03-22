@@ -27,6 +27,8 @@ type (
 		events              [1024]epollevent
 		pendingReadConnSet  map[*Conn]struct{}
 		pendingWriteConnSet map[*Conn]struct{}
+
+		listenerConn *Conn
 	}
 )
 
@@ -43,20 +45,22 @@ var (
 func (r *Reactor) newEventLoop() *_EventLoop {
 	epollFD, err := syscall.EpollCreate1(0)
 	_panic(err)
+	wakeFD, err := unix.Eventfd(0, syscall.O_NONBLOCK)
+	_panic(err)
 	e := &_EventLoop{
 		reactor:             r,
 		epollFD:             epollFD,
+		wakeConn:            &Conn{fd: wakeFD},
 		taskChan:            make(chan func(), 1_0000),
 		connSet:             make(map[*Conn]struct{}),
 		pendingReadConnSet:  make(map[*Conn]struct{}),
 		pendingWriteConnSet: make(map[*Conn]struct{}),
 	}
-	r1, _, errNo := syscall.Syscall(syscall.SYS_EVENTFD2, 0, syscall.O_NONBLOCK, 0)
-	if errNo != 0 {
-		_panic(errNo)
-	}
-	e.wakeConn = &Conn{fd: int(r1)}
 	_panic(e.epollCtlConn(syscall.EPOLL_CTL_ADD, e.wakeConn, syscall.EPOLLIN|unix.EPOLLET))
+	if r.options.reusePort {
+		e.listenerConn = &Conn{fd: r.newListener(true)}
+		_panic(e.epollCtlConn(syscall.EPOLL_CTL_ADD, e.listenerConn, syscall.EPOLLIN))
+	}
 	r.waitGroup.Add(1)
 	go e.eventLoop()
 	return e
@@ -157,6 +161,12 @@ func (e *_EventLoop) epollWaitAndHandle(msec int) (int, error) {
 		if conn.fd == e.wakeConn.fd {
 			continue
 		}
+		if e.listenerConn != nil && conn.fd == e.listenerConn.fd {
+			if err := e.handleAccept(); err != nil {
+				return 0, err
+			}
+			continue
+		}
 		if event.events&eventsRead != 0 {
 			if edgeReadAll, err := e.handleRead(conn); err != nil {
 				e.reactor.logSessionError("handleRead", err, conn)
@@ -172,6 +182,21 @@ func (e *_EventLoop) epollWaitAndHandle(msec int) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+func (e *_EventLoop) handleAccept() error {
+	for i := 0; i < 10; i++ {
+		conn, err := e.reactor.accept(e.listenerConn.fd)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				return nil
+			}
+			return err
+		}
+		conn.eventLoop = e
+		e.registerConn(conn)
+	}
+	return nil
 }
 
 func (e *_EventLoop) transferToTaskChan(fn func()) error {

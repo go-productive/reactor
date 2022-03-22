@@ -3,11 +3,14 @@
 package reactor
 
 import (
+	"context"
 	"errors"
+	"golang.org/x/sys/unix"
 	"io"
 	"net"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -20,8 +23,8 @@ type (
 	Reactor struct {
 		options *_Options
 
-		listener   *net.TCPListener
-		listenerFD int
+		addr      string
+		listeners []net.Listener
 
 		eventLoops []*_EventLoop
 		waitGroup  sync.WaitGroup
@@ -34,45 +37,91 @@ func New(addr string, opts ...Option) *Reactor {
 	options := newOptions(opts...)
 	r := &Reactor{
 		options:      options,
+		addr:         addr,
 		eventLoops:   make([]*_EventLoop, 0, options.eventLoopSize),
 		shutdownChan: make(chan struct{}),
 	}
-	r.initListener(addr)
 	for i := 0; i < cap(r.eventLoops); i++ {
 		r.eventLoops = append(r.eventLoops, r.newEventLoop())
 	}
 	return r
 }
 
-func (r *Reactor) initListener(addr string) {
-	listener, err := net.Listen("tcp", addr)
+func (r *Reactor) newListener(nonblocking bool) int {
+	var lc net.ListenConfig
+	if r.options.reusePort {
+		lc.Control = func(network, address string, c syscall.RawConn) (err1 error) {
+			err2 := c.Control(func(fd uintptr) {
+				err1 = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+			})
+			if err1 != nil {
+				return err1
+			}
+			return err2
+		}
+	}
+	listener, err := lc.Listen(context.TODO(), "tcp", r.addr)
 	_panic(err)
-	r.listener = listener.(*net.TCPListener)
 
-	fdValue := reflect.Indirect(reflect.ValueOf(r.listener)).FieldByName("fd")
+	fdValue := reflect.Indirect(reflect.ValueOf(listener)).FieldByName("fd")
 	pfdValue := reflect.Indirect(fdValue).FieldByName("pfd")
-	r.listenerFD = int(pfdValue.FieldByName("Sysfd").Int())
-	_panic(syscall.SetNonblock(r.listenerFD, false))
+	listenerFD := int(pfdValue.FieldByName("Sysfd").Int())
+	if !nonblocking {
+		_panic(syscall.SetNonblock(listenerFD, nonblocking))
+	}
+
+	r.listeners = append(r.listeners, listener)
+	return listenerFD
 }
 
 func (r *Reactor) ListenAndServe() error {
+	if r.options.reusePort {
+		<-r.shutdownChan
+		return net.ErrClosed
+	}
+
+	listenerFD := r.newListener(false)
 	for {
-		fd, remoteAddr, err := syscall.Accept4(r.listenerFD, syscall.SOCK_NONBLOCK)
+		conn, err := r.accept(listenerFD)
 		if err != nil {
-			if r.IsShutdown() {
-				return err
-			}
-			opError := &net.OpError{Op: "accept", Net: "tcp", Source: nil, Addr: r.listener.Addr(), Err: err}
-			if opError.Temporary() {
-				r.options.logErrorFunc("ListenAndServe", "err", opError)
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				r.options.logErrorFunc("ListenAndServe", "err", err)
 				time.Sleep(time.Second)
 				continue
 			}
-			return opError
+			return err
 		}
-		r.logError("SetsockoptInt", syscall.SetsockoptInt(fd, syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1))
-		r.logError("registerConn", r.registerConn(fd, toAddr(remoteAddr)))
+		r.logError("registerConn", r.registerConn(conn))
 	}
+}
+
+func (r *Reactor) registerConn(c *Conn) error {
+	leastEventLoop := r.eventLoops[0]
+	for i := 1; i < len(r.eventLoops); i++ {
+		if atomic.LoadInt32(&r.eventLoops[i].connSize) < atomic.LoadInt32(&leastEventLoop.connSize) {
+			leastEventLoop = r.eventLoops[i]
+		}
+	}
+	c.eventLoop = leastEventLoop
+	return c.eventLoop.transferToTaskChan(func() {
+		c.eventLoop.registerConn(c)
+	})
+}
+
+func (r *Reactor) accept(listenerFD int) (*Conn, error) {
+	fd, remoteAddr, err := syscall.Accept4(listenerFD, syscall.SOCK_NONBLOCK)
+	if err != nil {
+		return nil, &net.OpError{Op: "accept", Net: "tcp", Source: nil, Addr: r.listeners[0].Addr(), Err: err}
+	}
+	r.logError("SetsockoptInt", syscall.SetsockoptInt(fd, syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1))
+	c := &Conn{
+		fd:           fd,
+		reactor:      r,
+		onlyCallback: r.options.onlyCallback,
+		remoteAddr:   toAddr(remoteAddr),
+		readBuf:      make([]byte, r.options.readBufSize),
+	}
+	return c, nil
 }
 
 func (r *Reactor) Shutdown() {
@@ -82,7 +131,9 @@ func (r *Reactor) Shutdown() {
 
 func (r *Reactor) ShutdownListener() {
 	close(r.shutdownChan)
-	_ = r.listener.Close()
+	for _, listener := range r.listeners {
+		_ = listener.Close()
+	}
 }
 
 func (r *Reactor) ShutdownEventLoop() {

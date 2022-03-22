@@ -7,7 +7,6 @@ import (
 	"golang.org/x/sys/unix"
 	"io"
 	"net"
-	"sync/atomic"
 	"syscall"
 )
 
@@ -30,26 +29,6 @@ type (
 		Session interface{}
 	}
 )
-
-func (r *Reactor) registerConn(fd int, remoteAddr net.Addr) error {
-	leastEventLoop := r.eventLoops[0]
-	for i := 1; i < len(r.eventLoops); i++ {
-		if atomic.LoadInt32(&r.eventLoops[i].connSize) < atomic.LoadInt32(&leastEventLoop.connSize) {
-			leastEventLoop = r.eventLoops[i]
-		}
-	}
-	c := &Conn{
-		fd:           fd,
-		reactor:      r,
-		onlyCallback: r.options.onlyCallback,
-		eventLoop:    leastEventLoop,
-		remoteAddr:   remoteAddr,
-		readBuf:      make([]byte, r.options.readBufSize),
-	}
-	return c.eventLoop.transferToTaskChan(func() {
-		c.eventLoop.registerConn(c)
-	})
-}
 
 // AsyncWrite write bytes to conn in other goroutine.
 func (c *Conn) AsyncWrite(bs []byte) error {
@@ -92,7 +71,7 @@ func (c *Conn) newOpError(op string, err error) error {
 
 // LocalAddr returns the local network address.
 func (c *Conn) LocalAddr() net.Addr {
-	return c.reactor.listener.Addr()
+	return c.reactor.listeners[0].Addr()
 }
 
 // RemoteAddr returns the remote network address.
