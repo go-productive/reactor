@@ -137,8 +137,8 @@ func (r *Reactor) ShutdownListener() {
 }
 
 func (r *Reactor) ShutdownEventLoop() {
-	for _, subReactor := range r.eventLoops {
-		subReactor.shutdown()
+	for _, eventLoop := range r.eventLoops {
+		eventLoop.shutdown()
 	}
 	r.waitGroup.Wait()
 }
