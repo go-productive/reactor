@@ -5,7 +5,7 @@ import (
 )
 
 func main() {
-	mainReactor := reactor.New(":64000",
+	r := reactor.New(":64000",
 		reactor.WithDebugMode(true),
 		reactor.WithOnlyCallback(true),
 		reactor.WithOnReadMsgFunc(func(reqBytes []byte, conn *reactor.Conn) {
@@ -19,5 +19,5 @@ func main() {
 			}()
 		}),
 	)
-	panic(mainReactor.ListenAndServe())
+	panic(r.ListenAndServe())
 }
