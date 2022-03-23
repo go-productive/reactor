@@ -36,7 +36,7 @@ const (
 	eventsWrite = syscall.EPOLLOUT
 )
 
-func (r *Reactor) newEventLoop(addr string) *_EventLoop {
+func (r *Reactor) newEventLoop() *_EventLoop {
 	epollFD, err := syscall.EpollCreate1(0)
 	_panic(err)
 	wakeFD, err := unix.Eventfd(0, syscall.O_NONBLOCK)
@@ -50,7 +50,7 @@ func (r *Reactor) newEventLoop(addr string) *_EventLoop {
 		pendingReadConnSet:  make(map[*Conn]struct{}),
 		pendingWriteConnSet: make(map[*Conn]struct{}),
 	}
-	e.initListener(addr)
+	e.initListener(r.addr)
 	_panic(e.epollCtlConn(syscall.EPOLL_CTL_ADD, e.listenerConn, syscall.EPOLLIN))
 	_panic(e.epollCtlConn(syscall.EPOLL_CTL_ADD, e.wakeConn, syscall.EPOLLIN|unix.EPOLLET))
 	r.waitGroup.Add(1)
@@ -89,7 +89,11 @@ func (e *_EventLoop) epollCtlConn(op int, conn *Conn, events uint32) error {
 func (e *_EventLoop) eventLoop() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+
 	defer e.reactor.waitGroup.Done()
+	defer syscall.Close(e.epollFD)
+	defer e.listener.Close()
+	defer syscall.Close(e.wakeConn.fd)
 	defer func() {
 		for conn := range e.connSet {
 			e.closeConn(conn)
@@ -98,11 +102,9 @@ func (e *_EventLoop) eventLoop() {
 
 	for msec := -1; ; {
 		n, err := e.epollWaitAndHandle(msec)
-		if err != nil {
-			if e.reactor.IsShutdown() {
-				return
-			}
-			panic(err)
+		_panic(err)
+		if e.reactor.IsShutdown() {
+			return
 		}
 
 		e.consumeTaskChan()
@@ -270,19 +272,12 @@ func (e *_EventLoop) write(conn *Conn, bs []byte) {
 	}
 }
 
-func (e *_EventLoop) shutdown() {
-	_ = syscall.Close(e.epollFD)
-	_ = e.listener.Close()
-	_ = syscall.Close(e.wakeConn.fd)
-	_ = e.wakeup()
-}
-
 func (e *_EventLoop) closeConn(conn *Conn) {
 	if conn.closed {
 		return
 	}
-	e.reactor.logError("closeConn", conn.newOpError("close", syscall.Close(conn.fd)), conn)
 	e.reactor.logError("closeConn", e.epollCtlConn(syscall.EPOLL_CTL_DEL, conn, 0), conn)
+	e.reactor.logError("closeConn", conn.newOpError("close", syscall.Close(conn.fd)), conn)
 	delete(e.connSet, conn)
 	delete(e.pendingReadConnSet, conn)
 	delete(e.pendingWriteConnSet, conn)

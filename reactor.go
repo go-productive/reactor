@@ -16,6 +16,7 @@ var (
 
 type (
 	Reactor struct {
+		addr         string
 		options      *_Options
 		eventLoops   []*_EventLoop
 		waitGroup    sync.WaitGroup
@@ -26,17 +27,18 @@ type (
 func New(addr string, opts ...Option) *Reactor {
 	options := newOptions(opts...)
 	r := &Reactor{
+		addr:         addr,
 		options:      options,
 		eventLoops:   make([]*_EventLoop, 0, options.eventLoopSize),
 		shutdownChan: make(chan struct{}),
-	}
-	for i := 0; i < cap(r.eventLoops); i++ {
-		r.eventLoops = append(r.eventLoops, r.newEventLoop(addr))
 	}
 	return r
 }
 
 func (r *Reactor) ListenAndServe() error {
+	for i := 0; i < cap(r.eventLoops); i++ {
+		r.eventLoops = append(r.eventLoops, r.newEventLoop())
+	}
 	<-r.shutdownChan
 	return net.ErrClosed
 }
@@ -44,7 +46,7 @@ func (r *Reactor) ListenAndServe() error {
 func (r *Reactor) Shutdown() {
 	close(r.shutdownChan)
 	for _, eventLoop := range r.eventLoops {
-		eventLoop.shutdown()
+		_ = eventLoop.wakeup()
 	}
 	r.waitGroup.Wait()
 }
