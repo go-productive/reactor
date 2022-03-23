@@ -3,10 +3,15 @@ package main
 import (
 	"encoding/binary"
 	"github.com/go-productive/reactor"
+	"net/http"
+	_ "net/http/pprof"
 	"strconv"
 )
 
 func main() {
+	go func() {
+		panic(http.ListenAndServe(":64001", nil))
+	}()
 	r := reactor.New(":64000",
 		reactor.WithOnReadMsgFunc(func(reqBytes []byte, conn *reactor.Conn) {
 			req, err := strconv.Atoi(string(reqBytes))
