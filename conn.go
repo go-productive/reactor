@@ -13,7 +13,6 @@ import (
 type (
 	Conn struct {
 		fd           int
-		reactor      *Reactor
 		eventLoop    *_EventLoop
 		remoteAddr   net.Addr
 		closed       bool
@@ -71,7 +70,7 @@ func (c *Conn) newOpError(op string, err error) error {
 
 // LocalAddr returns the local network address.
 func (c *Conn) LocalAddr() net.Addr {
-	return c.reactor.listeners[0].Addr()
+	return c.eventLoop.listener.Addr()
 }
 
 // RemoteAddr returns the remote network address.
@@ -99,7 +98,7 @@ func (c *Conn) readMsg() (bool, [][]byte, error) {
 	c.readIndex += readN
 
 	var messages [][]byte
-	options := c.reactor.options
+	options := c.eventLoop.reactor.options
 	for start := c.msgIndex + options.headLen; c.readIndex >= start; start = c.msgIndex + options.headLen {
 		bodyLength := options.headLenFunc(c.readBuf[c.msgIndex:start])
 		if bodyLength > options.maxBodyLength {

@@ -3,32 +3,31 @@
 package reactor
 
 import (
+	"context"
 	"golang.org/x/sys/unix"
 	"net"
+	"reflect"
 	"runtime"
 	"sync/atomic"
 	"syscall"
-	"time"
 	"unsafe"
 )
 
 type (
 	_EventLoop struct {
-		reactor *Reactor
-		epollFD int
+		reactor      *Reactor
+		epollFD      int
+		listener     net.Listener
+		listenerConn *Conn
+		wakeConn     *Conn
+		waked        uint32
+		taskChan     chan func()
 
-		wakeConn *Conn
-		waked    uint32
-		taskChan chan func()
-
-		connSet  map[*Conn]struct{}
-		connSize int32
+		connSet map[*Conn]struct{}
 
 		events              [1024]epollevent
 		pendingReadConnSet  map[*Conn]struct{}
 		pendingWriteConnSet map[*Conn]struct{}
-
-		listenerConn *Conn
 	}
 )
 
@@ -37,12 +36,7 @@ const (
 	eventsWrite = syscall.EPOLLOUT
 )
 
-var (
-	u         uint64 = 1
-	wakeBytes        = (*(*[8]byte)(unsafe.Pointer(&u)))[:]
-)
-
-func (r *Reactor) newEventLoop() *_EventLoop {
+func (r *Reactor) newEventLoop(addr string) *_EventLoop {
 	epollFD, err := syscall.EpollCreate1(0)
 	_panic(err)
 	wakeFD, err := unix.Eventfd(0, syscall.O_NONBLOCK)
@@ -56,14 +50,32 @@ func (r *Reactor) newEventLoop() *_EventLoop {
 		pendingReadConnSet:  make(map[*Conn]struct{}),
 		pendingWriteConnSet: make(map[*Conn]struct{}),
 	}
+	e.initListener(addr)
+	_panic(e.epollCtlConn(syscall.EPOLL_CTL_ADD, e.listenerConn, syscall.EPOLLIN))
 	_panic(e.epollCtlConn(syscall.EPOLL_CTL_ADD, e.wakeConn, syscall.EPOLLIN|unix.EPOLLET))
-	if r.options.reusePort {
-		e.listenerConn = &Conn{fd: r.newListener(true)}
-		_panic(e.epollCtlConn(syscall.EPOLL_CTL_ADD, e.listenerConn, syscall.EPOLLIN))
-	}
 	r.waitGroup.Add(1)
 	go e.eventLoop()
 	return e
+}
+
+func (e *_EventLoop) initListener(addr string) {
+	lc := &net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) (err1 error) {
+			err2 := c.Control(func(fd uintptr) {
+				err1 = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+			})
+			if err1 != nil {
+				return err1
+			}
+			return err2
+		},
+	}
+	listener, err := lc.Listen(context.TODO(), "tcp", addr)
+	_panic(err)
+	fdValue := reflect.Indirect(reflect.ValueOf(listener)).FieldByName("fd")
+	pfdValue := reflect.Indirect(fdValue).FieldByName("pfd")
+	listenerFD := int(pfdValue.FieldByName("Sysfd").Int())
+	e.listener, e.listenerConn = listener, &Conn{fd: listenerFD}
 }
 
 func (e *_EventLoop) epollCtlConn(op int, conn *Conn, events uint32) error {
@@ -78,20 +90,15 @@ func (e *_EventLoop) eventLoop() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	defer e.reactor.waitGroup.Done()
+	defer func() {
+		for conn := range e.connSet {
+			e.closeConn(conn)
+		}
+	}()
+
 	for msec := -1; ; {
 		n, err := e.epollWaitAndHandle(msec)
 		if err != nil {
-			e.consumeTaskChan()
-			for ; len(e.connSet) > 0; time.Sleep(time.Millisecond) {
-				for conn := range e.connSet {
-					if !conn.writeBuf.isEmpty() {
-						_, _ = e.writeBufToFD(conn)
-					}
-					if conn.writeBuf.isEmpty() {
-						e.closeConn(conn)
-					}
-				}
-			}
 			if e.reactor.IsShutdown() {
 				return
 			}
@@ -110,46 +117,6 @@ func (e *_EventLoop) eventLoop() {
 	}
 }
 
-func (e *_EventLoop) writeBufToFD(conn *Conn) (bool, error) {
-	writeFull, err := conn.writeBufToFD()
-	if err != nil {
-		e.reactor.logSessionError("writeBufToFD", err, conn)
-		e.closeConn(conn)
-	}
-	return writeFull, err
-}
-
-func (e *_EventLoop) handlePending() {
-	for conn := range e.pendingWriteConnSet {
-		if writeFull, err := e.writeBufToFD(conn); err == nil && writeFull {
-			delete(e.pendingWriteConnSet, conn)
-		}
-	}
-	for conn := range e.pendingReadConnSet {
-		if edgeReadAll, err := e.handleRead(conn); err != nil {
-			e.reactor.logSessionError("handleRead", err, conn)
-			e.closeConn(conn)
-		} else if edgeReadAll {
-			delete(e.pendingReadConnSet, conn)
-		}
-	}
-}
-
-func (e *_EventLoop) handleRead(conn *Conn) (bool, error) {
-	edgeReadAll, messages, err := conn.readMsg()
-	if err != nil {
-		return edgeReadAll, err
-	}
-	onlyCallback := conn.onlyCallback
-	for _, msg := range messages {
-		e.reactor.options.onReadMsgFunc(msg, conn)
-	}
-	if onlyCallback != conn.onlyCallback {
-		return false, nil
-	}
-	return edgeReadAll, nil
-}
-
 func (e *_EventLoop) epollWaitAndHandle(msec int) (int, error) {
 	n, err := epollWait(e.epollFD, e.events[:], msec)
 	if err != nil && err != syscall.EINTR {
@@ -161,22 +128,19 @@ func (e *_EventLoop) epollWaitAndHandle(msec int) (int, error) {
 		if conn.fd == e.wakeConn.fd {
 			continue
 		}
-		if e.listenerConn != nil && conn.fd == e.listenerConn.fd {
+		if conn.fd == e.listenerConn.fd {
 			if err := e.handleAccept(); err != nil {
 				return 0, err
 			}
 			continue
 		}
 		if event.events&eventsRead != 0 {
-			if edgeReadAll, err := e.handleRead(conn); err != nil {
-				e.reactor.logSessionError("handleRead", err, conn)
-				e.closeConn(conn)
-			} else if !edgeReadAll {
+			if !e.handleRead(conn) {
 				e.pendingReadConnSet[conn] = struct{}{}
 			}
 		}
 		if event.events&eventsWrite != 0 && !conn.writeBuf.isEmpty() {
-			if writeFull, err := e.writeBufToFD(conn); err == nil && !writeFull {
+			if !e.writeBufToFD(conn) {
 				e.pendingWriteConnSet[conn] = struct{}{}
 			}
 		}
@@ -186,38 +150,80 @@ func (e *_EventLoop) epollWaitAndHandle(msec int) (int, error) {
 
 func (e *_EventLoop) handleAccept() error {
 	for i := 0; i < 10; i++ {
-		conn, err := e.reactor.accept(e.listenerConn.fd)
+		c, err := e.accept()
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+			opError := &net.OpError{Op: "accept", Net: "tcp", Source: nil, Addr: e.listener.Addr(), Err: err}
+			if opError.Temporary() {
 				return nil
 			}
-			return err
+			return opError
 		}
-		conn.eventLoop = e
-		e.registerConn(conn)
+		e.reactor.options.onConnFunc(c)
+		e.connSet[c] = struct{}{}
 	}
 	return nil
 }
 
-func (e *_EventLoop) transferToTaskChan(fn func()) error {
-	select {
-	case <-e.reactor.shutdownChan:
-		return net.ErrClosed
-	case e.taskChan <- fn:
-		return e.wakeup()
+func (e *_EventLoop) accept() (c *Conn, err error) {
+	fd, remoteAddr, err := syscall.Accept4(e.listenerConn.fd, syscall.SOCK_NONBLOCK)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = syscall.Close(fd)
+		}
+	}()
+	_ = syscall.SetsockoptInt(fd, syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
+
+	c = &Conn{
+		fd:           fd,
+		eventLoop:    e,
+		onlyCallback: e.reactor.options.onlyCallback,
+		remoteAddr:   toAddr(remoteAddr),
+		readBuf:      make([]byte, e.reactor.options.readBufSize),
+	}
+	return c, e.epollCtlConn(syscall.EPOLL_CTL_ADD, c, eventsRead|eventsWrite|unix.EPOLLET)
+}
+
+func (e *_EventLoop) handlePending() {
+	for conn := range e.pendingWriteConnSet {
+		if e.writeBufToFD(conn) {
+			delete(e.pendingWriteConnSet, conn)
+		}
+	}
+	for conn := range e.pendingReadConnSet {
+		if e.handleRead(conn) {
+			delete(e.pendingReadConnSet, conn)
+		}
 	}
 }
 
-func (e *_EventLoop) wakeup() error {
-	if !atomic.CompareAndSwapUint32(&e.waked, 0, 1) {
-		return nil
+func (e *_EventLoop) writeBufToFD(conn *Conn) bool {
+	writeFull, err := conn.writeBufToFD()
+	if err != nil {
+		e.reactor.logError("writeBufToFD", err, conn)
+		e.closeConn(conn)
+		return true
 	}
-	for {
-		_, err := syscall.Write(e.wakeConn.fd, wakeBytes)
-		if err != syscall.EINTR && err != syscall.EAGAIN {
-			return err
-		}
+	return writeFull
+}
+
+func (e *_EventLoop) handleRead(conn *Conn) bool {
+	edgeReadAll, messages, err := conn.readMsg()
+	if err != nil {
+		e.reactor.logError("handleRead", err, conn)
+		e.closeConn(conn)
+		return true
 	}
+	onlyCallback := conn.onlyCallback
+	for _, msg := range messages {
+		e.reactor.options.onReadMsgFunc(msg, conn)
+	}
+	if onlyCallback != conn.onlyCallback {
+		return false
+	}
+	return edgeReadAll
 }
 
 func (e *_EventLoop) consumeTaskChan() {
@@ -231,41 +237,53 @@ func (e *_EventLoop) consumeTaskChan() {
 	}
 }
 
-func (e *_EventLoop) registerConn(conn *Conn) {
-	err := e.epollCtlConn(syscall.EPOLL_CTL_ADD, conn, eventsRead|eventsWrite|unix.EPOLLET)
-	if err != nil {
-		e.reactor.logError("registerConn", err)
-		e.reactor.logError("registerConn", conn.newOpError("close", syscall.Close(conn.fd)))
-		return
+func (e *_EventLoop) transferToTaskChan(fn func()) error {
+	select {
+	case <-e.reactor.shutdownChan:
+		return net.ErrClosed
+	case e.taskChan <- fn:
+		return e.wakeup()
 	}
-	e.reactor.options.onConnFunc(conn)
-	e.connSet[conn] = struct{}{}
-	atomic.AddInt32(&e.connSize, 1)
+}
+
+var (
+	u         uint64 = 1
+	wakeBytes        = (*(*[8]byte)(unsafe.Pointer(&u)))[:]
+)
+
+func (e *_EventLoop) wakeup() error {
+	if !atomic.CompareAndSwapUint32(&e.waked, 0, 1) {
+		return nil
+	}
+	for {
+		_, err := syscall.Write(e.wakeConn.fd, wakeBytes)
+		if err != syscall.EINTR && err != syscall.EAGAIN {
+			return err
+		}
+	}
 }
 
 func (e *_EventLoop) write(conn *Conn, bs []byte) {
 	conn.writeBuf.write(bs)
-	if writeFull, err := e.writeBufToFD(conn); err == nil && !writeFull {
+	if !e.writeBufToFD(conn) {
 		e.pendingWriteConnSet[conn] = struct{}{}
 	}
 }
 
 func (e *_EventLoop) shutdown() {
-	e.reactor.logError("Close", syscall.Close(e.epollFD))
-	e.reactor.logError("Close", syscall.Close(e.wakeConn.fd))
+	_ = syscall.Close(e.epollFD)
+	_ = e.listener.Close()
+	_ = syscall.Close(e.wakeConn.fd)
+	_ = e.wakeup()
 }
 
 func (e *_EventLoop) closeConn(conn *Conn) {
 	if conn.closed {
 		return
 	}
-	e.reactor.logSessionError("closeConn", conn.newOpError("close", syscall.Close(conn.fd)), conn)
-	err := e.epollCtlConn(syscall.EPOLL_CTL_DEL, conn, 0)
-	if err != nil && err != syscall.EBADF {
-		e.reactor.logSessionError("closeConn", err, conn)
-	}
+	e.reactor.logError("closeConn", conn.newOpError("close", syscall.Close(conn.fd)), conn)
+	e.reactor.logError("closeConn", e.epollCtlConn(syscall.EPOLL_CTL_DEL, conn, 0), conn)
 	delete(e.connSet, conn)
-	atomic.AddInt32(&e.connSize, -1)
 	delete(e.pendingReadConnSet, conn)
 	delete(e.pendingWriteConnSet, conn)
 	e.reactor.options.onDisConnFunc(conn)
