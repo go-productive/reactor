@@ -151,18 +151,16 @@ func (e *_EventLoop) epollWaitAndHandle(msec int) (int, error) {
 }
 
 func (e *_EventLoop) handleAccept() error {
-	for i := 0; i < 10; i++ {
-		c, err := e.accept()
-		if err != nil {
-			opError := &net.OpError{Op: "accept", Net: "tcp", Source: nil, Addr: e.listener.Addr(), Err: err}
-			if opError.Temporary() {
-				return nil
-			}
-			return opError
+	c, err := e.accept()
+	if err != nil {
+		opError := &net.OpError{Op: "accept", Net: "tcp", Source: nil, Addr: e.listener.Addr(), Err: err}
+		if opError.Temporary() {
+			return nil
 		}
-		e.reactor.options.onConnFunc(c)
-		e.connSet[c] = struct{}{}
+		return opError
 	}
+	e.reactor.options.onConnFunc(c)
+	e.connSet[c] = struct{}{}
 	return nil
 }
 
